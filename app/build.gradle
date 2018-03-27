@@ -30,7 +30,7 @@ dependencies {
     //Kotlin
     implementation"org.jetbrains.kotlin:kotlin-stdlib-jre7:$kotlin_version"
 
-    compile 'com.google.android.exoplayer:exoplayer:r2.2.0'
+    implementation 'com.google.android.exoplayer:exoplayer:2.7.1'
 
     //Support
     compile "com.android.support:appcompat-v7:$supportLibVersion"
