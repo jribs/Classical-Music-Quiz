@@ -17,15 +17,28 @@
 package com.example.android.classicalmusicquiz
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PorterDuff
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.support.v4.content.ContextCompat
 import android.support.v7.app.AppCompatActivity
 import android.view.View
 import android.widget.Button
-import android.widget.ImageView
+import android.widget.Toast
+import com.google.android.exoplayer2.DefaultLoadControl
+import com.google.android.exoplayer2.ExoPlayerFactory
+import com.google.android.exoplayer2.SimpleExoPlayer
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
+import com.google.android.exoplayer2.source.ExtractorMediaSource
+import com.google.android.exoplayer2.source.MediaSource
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
+import com.google.android.exoplayer2.ui.SimpleExoPlayerView
+import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
+import com.google.android.exoplayer2.util.Util
+import kotlinx.android.synthetic.main.activity_quiz.*
 import java.util.*
 
 class QuizActivity : AppCompatActivity(), View.OnClickListener {
@@ -36,15 +49,20 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
     private var mCurrentScore: Int = 0
     private var mHighScore: Int = 0
     private lateinit var mButtons: Array<Button>
-
+    private lateinit var mExoPlayerView: SimpleExoPlayerView
+    private var mExoPlayer: SimpleExoPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_quiz)
 
-        val composerView = findViewById<View>(R.id.composerView) as ImageView
+        mExoPlayerView = exoPlayerWidget
+        mExoPlayerView.defaultArtwork = BitmapFactory.decodeResource(resources, R.drawable.question_mark)
+
 
         val isNewGame = !intent.hasExtra(REMAINING_SONGS_KEY)
+
+
 
         // If it's a new game, set the current score to 0 and load all samples.
         if (isNewGame) {
@@ -63,8 +81,6 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         mQuestionSampleIDs = QuizUtils.generateQuestion(mRemainingSampleIDs)
         mAnswerSampleID = QuizUtils?.getCorrectAnswerID(mQuestionSampleIDs)
 
-        // Load the image of the composer for the answer into the ImageView.
-        composerView.setImageBitmap(Sample.getComposerArtBySampleID(this, mAnswerSampleID))
 
         // If there is only one answer left, end the game.
         if (mQuestionSampleIDs!!.size < 2) {
@@ -74,6 +90,45 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
 
         // Initialize the buttons with the composers names.
         mButtons = initializeButtons(mQuestionSampleIDs)
+
+        val answerSample = Sample.getSampleByID(this, mAnswerSampleID)
+        if(answerSample == null){
+            Toast.makeText(this, getString(R.string.toast_no_sample_answer), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if(mExoPlayer==null) {
+            initializePlayer(Uri.parse(answerSample.uri))
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        releasePlayer()
+    }
+
+    private fun initializePlayer(mediaUri: Uri) {
+        val trackSelector = DefaultTrackSelector()
+        val loadControl = DefaultLoadControl()
+        mExoPlayer = ExoPlayerFactory.newSimpleInstance(this, trackSelector, loadControl)
+        mExoPlayerView.player = mExoPlayer
+        val userAgent = Util.getUserAgent(this, "ClassicalMusicQuiz")
+        val mediaSource: MediaSource = ExtractorMediaSource(mediaUri,
+                DefaultDataSourceFactory(this, userAgent),
+                DefaultExtractorsFactory(), null, null
+                )
+        mExoPlayer?.prepare(mediaSource)
+        mExoPlayer?.playWhenReady = true
+    }
+
+    private fun releasePlayer(){
+        if(mExoPlayer!=null){
+            with(mExoPlayer!!){
+                stop()
+                release()
+            }
+        }
+        mExoPlayer = null
     }
 
 
@@ -89,7 +144,7 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         for (i in answerSampleIDs.indices) {
             val currentButton = findViewById<View>(mButtonIDs[i]) as Button
             val currentSample = Sample.getSampleByID(this, answerSampleIDs[i])
-            buttons[i] = currentButton
+            buttons.add(i, currentButton)
             currentButton.setOnClickListener(this)
             if (currentSample != null) {
                 currentButton.text = currentSample.composer
@@ -155,8 +210,9 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
     private fun showCorrectAnswer() {
         for (i in mQuestionSampleIDs!!.indices) {
             val buttonSampleID = mQuestionSampleIDs!![i]
-
             mButtons!![i].isEnabled = false
+            mExoPlayerView.defaultArtwork= Sample.getComposerArtBySampleID(this, mAnswerSampleID)
+
             if (buttonSampleID == mAnswerSampleID) {
                 mButtons!![i].background.setColorFilter(ContextCompat.getColor(this, android.R.color.holo_green_light),
                         PorterDuff.Mode.MULTIPLY)
