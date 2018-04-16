@@ -16,6 +16,9 @@
 
 package com.example.android.classicalmusicquiz
 
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -23,25 +26,31 @@ import android.graphics.PorterDuff
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
+import android.support.v4.app.NotificationCompat
 import android.support.v4.content.ContextCompat
+import android.support.v4.media.session.MediaButtonReceiver
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import android.support.v7.app.AppCompatActivity
 import android.view.View
 import android.widget.Button
 import android.widget.Toast
-import com.google.android.exoplayer2.DefaultLoadControl
-import com.google.android.exoplayer2.ExoPlayerFactory
-import com.google.android.exoplayer2.SimpleExoPlayer
+import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
 import com.google.android.exoplayer2.source.ExtractorMediaSource
 import com.google.android.exoplayer2.source.MediaSource
+import com.google.android.exoplayer2.source.TrackGroupArray
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
-import com.google.android.exoplayer2.ui.SimpleExoPlayerView
+import com.google.android.exoplayer2.trackselection.TrackSelectionArray
+import com.google.android.exoplayer2.ui.PlayerView
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
 import com.google.android.exoplayer2.util.Util
 import kotlinx.android.synthetic.main.activity_quiz.*
 import java.util.*
 
-class QuizActivity : AppCompatActivity(), View.OnClickListener {
+class QuizActivity : AppCompatActivity(), View.OnClickListener, Player.EventListener {
+
+
     private val mButtonIDs = intArrayOf(R.id.buttonA, R.id.buttonB, R.id.buttonC, R.id.buttonD)
     private lateinit var mRemainingSampleIDs: ArrayList<Int>
     private lateinit var mQuestionSampleIDs: ArrayList<Int>
@@ -49,8 +58,27 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
     private var mCurrentScore: Int = 0
     private var mHighScore: Int = 0
     private lateinit var mButtons: Array<Button>
-    private lateinit var mExoPlayerView: SimpleExoPlayerView
+    private lateinit var mExoPlayerView: PlayerView
     private var mExoPlayer: SimpleExoPlayer? = null
+    private val mMediaSession: MediaSessionCompat by lazy {
+        MediaSessionCompat(this, TAG)
+    }
+    private var mNotificationManager: NotificationManager? = null
+
+    private val mPlaybackStateBuilder: PlaybackStateCompat.Builder by lazy {
+        PlaybackStateCompat.Builder().setActions(
+                PlaybackStateCompat.ACTION_PLAY or
+                        PlaybackStateCompat.ACTION_PAUSE or
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+        )
+    }
+
+    companion object {
+        private val TAG = this.javaClass.simpleName
+        private val CORRECT_ANSWER_DELAY_MILLIS = 1000
+        private val REMAINING_SONGS_KEY = "remaining_songs"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,10 +87,7 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         mExoPlayerView = exoPlayerWidget
         mExoPlayerView.defaultArtwork = BitmapFactory.decodeResource(resources, R.drawable.question_mark)
 
-
         val isNewGame = !intent.hasExtra(REMAINING_SONGS_KEY)
-
-
 
         // If it's a new game, set the current score to 0 and load all samples.
         if (isNewGame) {
@@ -100,26 +125,23 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         if(mExoPlayer==null) {
             initializePlayer(Uri.parse(answerSample.uri))
         }
+
+        initializeMediaSession()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mMediaSession.isActive = true
     }
 
     override fun onDestroy() {
         super.onDestroy()
         releasePlayer()
+        mMediaSession.isActive = false
+
     }
 
-    private fun initializePlayer(mediaUri: Uri) {
-        val trackSelector = DefaultTrackSelector()
-        val loadControl = DefaultLoadControl()
-        mExoPlayer = ExoPlayerFactory.newSimpleInstance(this, trackSelector, loadControl)
-        mExoPlayerView.player = mExoPlayer
-        val userAgent = Util.getUserAgent(this, "ClassicalMusicQuiz")
-        val mediaSource: MediaSource = ExtractorMediaSource(mediaUri,
-                DefaultDataSourceFactory(this, userAgent),
-                DefaultExtractorsFactory(), null, null
-                )
-        mExoPlayer?.prepare(mediaSource)
-        mExoPlayer?.playWhenReady = true
-    }
+
 
     private fun releasePlayer(){
         if(mExoPlayer!=null){
@@ -129,16 +151,9 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
             }
         }
         mExoPlayer = null
+        mNotificationManager?.cancelAll()
     }
 
-
-    /**
-     * Initializes the button to the correct views, and sets the text to the composers names,
-     * and set's the OnClick listener to the buttons.
-     *
-     * @param answerSampleIDs The IDs of the possible answers to the question.
-     * @return The Array of initialized buttons.
-     */
     private fun initializeButtons(answerSampleIDs: ArrayList<Int>): Array<Button> {
         val buttons = mutableListOf<Button>()
         for (i in answerSampleIDs.indices) {
@@ -153,14 +168,6 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         return buttons.toTypedArray()
     }
 
-
-    /**
-     * The OnClick method for all of the answer buttons. The method uses the index of the button
-     * in button array to to get the ID of the sample from the array of question IDs. It also
-     * toggles the UI to show the correct answer.
-     *
-     * @param v The button that was clicked.
-     */
     override fun onClick(v: View) {
 
         // Show the correct answer.
@@ -204,6 +211,51 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
 
     }
 
+    private fun showNotification(stateOfPlayback: PlaybackStateCompat){
+        val notificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(this, "Media")
+
+        var icon: Int
+        var playpause: String
+        if(stateOfPlayback.state == PlaybackStateCompat.STATE_PLAYING){
+            icon = R.drawable.exo_controls_pause
+            playpause = getString(R.string.pause)
+        } else {
+            icon = R.drawable.exo_controls_play
+            playpause = getString(R.string.play)
+        }
+
+        //Define some actions
+        val playpauseAction: NotificationCompat.Action = NotificationCompat.Action(icon, playpause,
+                MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_PLAY_PAUSE))
+
+        val restartAction: NotificationCompat.Action = NotificationCompat.Action(
+                                        R.drawable.exo_controls_previous, getString(R.string.restart),
+                                        MediaButtonReceiver.buildMediaButtonPendingIntent(
+                                                this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+        )
+
+
+        val pendingContentIntent: PendingIntent = PendingIntent.getActivity(this, 0,
+                Intent(this, QuizActivity.javaClass), 0)
+
+
+        with(notificationBuilder){
+            setContentTitle("Guess")
+            setContentText(getString(R.string.notification_text))
+            setContentIntent(pendingContentIntent)
+            setSmallIcon(R.drawable.ic_music_note_white_24dp)
+            setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            addAction(playpauseAction)
+            addAction(restartAction)
+            setStyle(android.support.v4.media.app.NotificationCompat.MediaStyle().setMediaSession(
+                    mMediaSession.sessionToken
+            ).setShowActionsInCompactView(0,1))
+        }
+
+        mNotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        mNotificationManager!!.notify(0, notificationBuilder.build())
+    }
+
     /**
      * Disables the buttons and changes the background colors to show the correct answer.
      */
@@ -226,9 +278,96 @@ class QuizActivity : AppCompatActivity(), View.OnClickListener {
         }
     }
 
-    companion object {
-
-        private val CORRECT_ANSWER_DELAY_MILLIS = 1000
-        private val REMAINING_SONGS_KEY = "remaining_songs"
+    private fun initializePlayer(mediaUri: Uri) {
+        val trackSelector = DefaultTrackSelector()
+        val loadControl = DefaultLoadControl()
+        mExoPlayer = ExoPlayerFactory.newSimpleInstance(this, trackSelector, loadControl)
+        mExoPlayerView.player = mExoPlayer
+        val userAgent = Util.getUserAgent(this, "ClassicalMusicQuiz")
+        val mediaSource: MediaSource = ExtractorMediaSource(mediaUri,
+                DefaultDataSourceFactory(this, userAgent),
+                DefaultExtractorsFactory(), null, null
+        )
+        mExoPlayer?.prepare(mediaSource)
+        mExoPlayer?.playWhenReady = true
+        mExoPlayer?.addListener(this)
     }
+
+    private fun initializeMediaSession(){
+        with(mMediaSession){
+            setCallback(QuizMediaSessionCallback())
+            setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS)
+            setMediaButtonReceiver(null)
+            setPlaybackState(mPlaybackStateBuilder.build())
+            isActive=true
+        }
+    }
+
+//region Exoplayer Listener Methods
+    override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters?) {
+
+    }
+
+    override fun onSeekProcessed() {
+
+    }
+
+    override fun onTracksChanged(trackGroups: TrackGroupArray?, trackSelections: TrackSelectionArray?) {
+
+    }
+
+    override fun onPlayerError(error: ExoPlaybackException?) {
+
+    }
+
+    override fun onLoadingChanged(isLoading: Boolean) {
+
+    }
+
+    override fun onPositionDiscontinuity(reason: Int) {
+
+    }
+
+    override fun onRepeatModeChanged(repeatMode: Int) {
+
+    }
+
+    override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+    }
+
+    override fun onTimelineChanged(timeline: Timeline?, manifest: Any?, reason: Int) {
+
+    }
+
+    override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
+
+        if(playWhenReady && playbackState == Player.STATE_READY){
+            mPlaybackStateBuilder.setState(PlaybackStateCompat.STATE_PLAYING,
+                    mExoPlayer!!.currentPosition, 1f)
+        } else if (playbackState == Player.STATE_READY){
+            mPlaybackStateBuilder.setState(PlaybackStateCompat.STATE_PAUSED,
+                    mExoPlayer!!.currentPosition, 1f)
+        }
+        mMediaSession.setPlaybackState(mPlaybackStateBuilder.build())
+        showNotification(mPlaybackStateBuilder.build())
+
+    }
+
+//endregion
+
+    inner class QuizMediaSessionCallback(): MediaSessionCompat.Callback() {
+        override fun onPlay() {
+            mExoPlayer?.playWhenReady = true
+        }
+
+        override fun onPause() {
+            mExoPlayer?.playWhenReady = false
+        }
+
+        override fun onSkipToPrevious() {
+            mExoPlayer?.seekTo(0)
+        }
+    }
+
+
 }
